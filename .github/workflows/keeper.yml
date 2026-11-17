@@ -1,0 +1,67 @@
+name: keeper
+
+on:
+  push:
+    branches: [main]
+    paths: ["inbox/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 한 번에 하나만 실행한다. 대기 중인 실행은 남은 요청서를 모두 처리하므로 건너뛰어도 손실이 없다.
+concurrency:
+  group: keeper
+  cancel-in-progress: false
+
+jobs:
+  keeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check credentials
+        id: cred
+        env:
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$API_KEY$OAUTH" ]; then
+            echo "::notice::ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN이 없어 keeper를 건너뜁니다."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.cred.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        if: steps.cred.outputs.ok == 'true'
+        with:
+          node-version: "20"
+
+      - name: Install
+        if: steps.cred.outputs.ok == 'true'
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          if [ -f dashboard/requirements.txt ]; then pip install -r dashboard/requirements.txt; fi
+          git config user.name "rates-keeper"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run keeper
+        if: steps.cred.outputs.ok == 'true'
+        env:
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$API_KEY" ]; then export ANTHROPIC_API_KEY="$API_KEY"; else export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH"; fi
+          claude -p "$(cat prompts/keeper_prompt.md)" \
+            --permission-mode acceptEdits \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python:*),Bash(pip:*),Bash(ls:*),Bash(date:*),Bash(TZ=Asia/Seoul date:*)" \
+            --max-turns 120
